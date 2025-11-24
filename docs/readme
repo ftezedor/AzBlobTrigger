@@ -1,0 +1,131 @@
+azurite   --location ./azurite   --blobPort 10000   --queuePort 10001   --tablePort 10002 
+
+
+export AZURITE_CONN="DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+
+# create container
+az storage container create   --name my-container   --connection-string "$AZURITE_CONN"
+
+# list storages
+az storage container list --connection-string "$AZURITE_CONN" --output table
+
+# list blobs
+az storage blob list --connection-string "$AZURITE_CONN" --output --container-name my-container --output table
+
+
+# create a sample file
+echo "hello" > /tmp/test.txt
+
+# upload
+az storage blob upload \
+  --container-name my-container \
+  --name /tmp/test.txt \
+  --file ./test.txt \
+  --connection-string "$AZURITE_CONN"
+
+
+
+#=======================================================================
+# To run the function app on Azure Functions:
+#=======================================================================
+Here’s the minimal set of changes to push your TypeScript blob trigger to Azure and have it call your real downstream.
+
+1) Update the trigger for production
+
+In src/index.ts:
+
+app.storageBlob("BlobWatcher", {
+  path: "real-container/{*name}",   // <-- set your real container name
+  connection: "InputStorage",       // <-- keep this setting name
+  source: "EventGrid",              // <-- use Event Grid in Azure
+  handler: BlobWatcher
+});
+
+EventGrid = low-latency, no noisy scans.
+Keep {*name} so nested paths match.
+| If you prefer not to touch Event Grid, you can leave LogsAndContainerScan 
+| (it works in Azure too, just more polling). I recommend EventGrid
+
+2) App settings in the Function App
+
+In Function App → Configuration → Application settings set:
+* AzureWebJobsStorage → connection string of a storage account for the function runtime (not necessarily the one you watch).
+* Choose one way for InputStorage (the storage you’re watching):
+
+Option A — Managed Identity (recommended)
+1. Enable System assigned managed identity on the Function App.
+2. On the watched storage account, grant the Function App:
+   * Storage Blob Data Reader (scope: account or container).
+3. Set this app setting (no connection string needed):
+
+InputStorage__accountName = <yourStorageAccountName>
+
+Option B — Connection string
+Set: InputStorage = <full connection string of the watched storage account>
+| You don’t need queue/table endpoints in Azure
+| * DOWNSTREAM_FUNCTION_URL → your real HTTPS endpoint (the other function or API).
+| * DOWNSTREAM_FUNCTION_KEY → only if that endpoint uses function-level auth (omit if using AAD).
+
+3) (Only if using Event Grid) create the subscription
+
+If your function app and storage account are in the same tenant/subscription, the binding can usually create this automatically. If it doesn’t, create it explicitly (one-time):
+
+# variables
+SUBSCRIPTION_ID=<sub>
+RESOURCE_GROUP=<rg>
+STORAGE_ACCOUNT=<storage>
+FUNCTION_APP=<funcapp>
+CONTAINER=real-container
+EVENTSUB_NAME=blobwatcher-eg
+
+# scope = the storage account
+SCOPE="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Storage/storageAccounts/$STORAGE_ACCOUNT"
+
+# function endpoint
+FUNC_ID="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Web/sites/$FUNCTION_APP/functions/BlobWatcher"
+
+az eventgrid event-subscription create \
+  --name "$EVENTSUB_NAME" \
+  --source-resource-id "$SCOPE" \
+  --endpoint-type azurefunction \
+  --endpoint "$FUNC_ID" \
+  --included-event-types Microsoft.Storage.BlobCreated \
+  --advanced-filter data.url StringBeginsWith "https://$STORAGE_ACCOUNT.blob.core.windows.net/$CONTAINER/"
+
+| If you watch multiple containers, repeat or adjust filters as needed.
+
+4) Build & publish
+
+From your project folder:
+
+npm ci
+npm run build
+func azure functionapp publish <your-func-app-name> --typescript
+
+| Make sure Node 18/20 is selected for the Function App (Linux Consumption/Premium works great)
+
+5) Test in Azure
+* Upload a file to real-container in the watched storage account.
+* In Function App → Monitor / Logs, you should see:
+
+Executing 'Functions.BlobWatcher' (Reason='New blob detected(EventGrid)...')
+BlobWatcher -> ...
+Downstream returned 200 ...
+Executed 'Functions.BlobWatcher' (Succeeded)
+
+If you see 4xx/5xx from downstream, double-check DOWNSTREAM_FUNCTION_URL (route + ?code= or x-functions-key header if using function key).
+
+6) (Optional) harden the HTTP call
+In BlobWatcher, add simple retry/backoff:
+
+async function postWithRetry(url: string, init: RequestInit, attempts = 3, backoffMs = 500) {
+  let last: Response | undefined;
+  for (let i = 0; i < attempts; i++) {
+    last = await fetch(url, init);
+    if (last.ok) return last;
+    await new Promise(r => setTimeout(r, backoffMs * (i + 1)));
+  }
+  return last!;
+}
+
+Use it instead of fetch(...), and only throw for the status codes you want to re-queue.

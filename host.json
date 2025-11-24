@@ -1,0 +1,23 @@
+{
+    "version": "2.0",
+    "extensions": {
+        "queues": {
+            "maxDequeueCount": 5
+        }
+    },
+    "extensionBundle": {
+        "id": "Microsoft.Azure.Functions.ExtensionBundle",
+        "version": "[4.*, 5.0.0)"
+    },
+    "logging": {
+        "logLevel": {
+            "default": "Warning",
+            "Host": "Warning",
+            "Host.Results": "Warning",
+            "Function.BlobWatcher": "Information",
+            "Azure": "Error",
+            "Azure.Core": "Error",
+            "Microsoft": "Error"
+        }
+    }
+}

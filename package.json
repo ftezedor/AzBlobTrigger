@@ -1,0 +1,20 @@
+{
+  "name": "blobwatcher-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "func start --typescript",
+    "dev": "npm run build && func start --typescript",
+    "downstream": "node -e \"require('http').createServer((req,res)=>{let b='';req.on('data',d=>b+=d);req.on('end',()=>{console.log('POST',req.url,b);res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({ok:true}))});}).listen(7079,'127.0.0.1',()=>console.log('Mock downstream listening on 127.0.0.1:7079'))\""
+  },
+  "dependencies": {
+    "@azure/functions": "^4.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  }
+}
